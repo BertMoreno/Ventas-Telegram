@@ -1,0 +1,12 @@
+.env
+__pycache__/
+*.pyc
+venv/
+.DS_Store
+memory/
+vectordb/
+docs/fix_agent.py
+docs/switch_to_gemini.py
+docs/switch_to_gemini3.py
+docs/test_keys.py
+docs/list_models.py
