@@ -45,7 +45,7 @@ def search_documents(query: str, n_results: int = 3) -> str:
     """Search indexed PDFs/docs for content relevant to the query."""
     try:
         import chromadb
-        from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
+        import chromadb.utils.embedding_functions as embedding_functions
     except ImportError:
         return "⚠️ Dependencias no instaladas. Ejecuta: pip install -r requirements.txt"
 
@@ -57,7 +57,16 @@ def search_documents(query: str, n_results: int = 3) -> str:
         )
 
     try:
-        embedding_fn = SentenceTransformerEmbeddingFunction(model_name="all-MiniLM-L6-v2")
+        api_key = os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            return "⚠️ Error: Añade GOOGLE_API_KEY en tu archivo .env o Railway"
+
+        # ChromaDB's GoogleGeminiEmbeddingFunction expects GEMINI_API_KEY by default
+        os.environ["GEMINI_API_KEY"] = api_key
+
+        embedding_fn = embedding_functions.GoogleGeminiEmbeddingFunction(
+            model_name="models/gemini-embedding-001"
+        )
         client = chromadb.PersistentClient(path=str(db_path))
         collection = client.get_collection("management_docs", embedding_function=embedding_fn)
 

@@ -55,9 +55,9 @@ def _build_client():
         return OpenAI(api_key=api_key)
 
     if LLM_PROVIDER == "gemini":
-        api_key = os.getenv("GEMINI_API_KEY")
+        api_key = os.getenv("GOOGLE_API_KEY")
         if not api_key:
-            print("\n[ERROR] Falta GEMINI_API_KEY en .env\n")
+            print("\n[ERROR] Falta GOOGLE_API_KEY en .env\n")
             sys.exit(1)
         try:
             import google.generativeai as genai
@@ -68,7 +68,7 @@ def _build_client():
             )
             sys.exit(1)
         genai.configure(api_key=api_key)
-        return genai.GenerativeModel(os.getenv("GEMINI_MODEL", "gemini-1.5-pro"))
+        return genai.GenerativeModel(os.getenv("GEMINI_MODEL", "gemini-1.5-flash"))
 
     print("\n[ERROR] LLM_PROVIDER no válido. Usa: anthropic | openai | gemini\n")
     sys.exit(1)

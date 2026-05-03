@@ -37,7 +37,9 @@ def _build_client():
             raise SystemExit("ERROR: Añade GOOGLE_API_KEY en .env")
         import google.generativeai as genai
         genai.configure(api_key=api_key)
-        return genai.GenerativeModel(os.getenv("GEMINI_MODEL", "gemini-1.5-flash"))
+        # Default to gemini-1.5-flash if not specified
+        model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+        return genai.GenerativeModel(model_name)
 
     raise SystemExit("ERROR: LLM_PROVIDER debe ser anthropic | openai | gemini")
 

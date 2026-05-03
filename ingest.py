@@ -8,11 +8,14 @@ Uso:
 Después de añadir nuevos documentos vuelve a ejecutarlo para re-indexar.
 """
 
+import os
 from pathlib import Path
 
+from dotenv import load_dotenv
 from rich.console import Console
 from rich.progress import track
 
+load_dotenv()
 console = Console()
 
 
@@ -76,13 +79,23 @@ def ingest():
 
     try:
         import chromadb
-        from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
+        import chromadb.utils.embedding_functions as embedding_functions
     except ImportError:
         console.print("[red]Error: ejecuta primero → pip install -r requirements.txt[/red]")
         return
 
-    console.print("[dim]Cargando modelo de embeddings (primera vez tarda ~1 min)...[/dim]")
-    embedding_fn = SentenceTransformerEmbeddingFunction(model_name="all-MiniLM-L6-v2")
+    api_key = os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        console.print("[red]Error: Añade GOOGLE_API_KEY en tu archivo .env[/red]")
+        return
+
+    # ChromaDB's GoogleGeminiEmbeddingFunction expects GEMINI_API_KEY by default
+    os.environ["GEMINI_API_KEY"] = api_key
+
+    console.print("[dim]Configurando modelo de embeddings de Google Gemini...[/dim]")
+    embedding_fn = embedding_functions.GoogleGeminiEmbeddingFunction(
+        model_name="models/gemini-embedding-001"
+    )
 
     db_client = chromadb.PersistentClient(path="vectordb")
 
