@@ -68,7 +68,7 @@ def _build_client():
             )
             sys.exit(1)
         genai.configure(api_key=api_key)
-        return genai.GenerativeModel(os.getenv("GEMINI_MODEL", "gemini-1.5-flash"))
+        return genai.GenerativeModel(os.getenv("GEMINI_MODEL", "gemini-3-flash-preview"))
 
     print("\n[ERROR] LLM_PROVIDER no válido. Usa: anthropic | openai | gemini\n")
     sys.exit(1)
@@ -81,6 +81,8 @@ SYSTEM_PROMPT = """---
 name: Director Comercial
 description: Agente especializado en la dirección comercial, liderazgo de equipos de ventas y gestión personalizada de talento basada en perfiles conductuales.
 ---
+
+IMPORTANTE: Usa siempre EMOJIS en tus respuestas para que sean dinámicas y fáciles de leer en Telegram (ej: 🚀, 📊, ✅, 👥, 📈, 🤝). Mantén un tono profesional pero cercano.
 
 # Skill: Director Comercial
 

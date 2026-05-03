@@ -38,7 +38,7 @@ def _build_client():
         import google.generativeai as genai
         genai.configure(api_key=api_key)
         # Default to gemini-1.5-flash if not specified
-        model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+        model_name = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
         return genai.GenerativeModel(model_name)
 
     raise SystemExit("ERROR: LLM_PROVIDER debe ser anthropic | openai | gemini")
