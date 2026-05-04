@@ -9,7 +9,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not TELEGRAM_TOKEN:
     raise SystemExit("ERROR: Añade TELEGRAM_BOT_TOKEN en tu archivo .env")
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
 from agent import SYSTEM_PROMPT, TOOLS, run_tool
@@ -91,52 +91,63 @@ def run_agent_sync(user_id: int, user_message: str) -> str:
     else:
         messages.append({"role": "user", "content": user_message})
 
-    if provider == "anthropic":
-        client = clients.get("anthropic")
-        if not client: return "Error: Anthropic no configurado (falta API KEY)."
-        response = client.messages.create(
-            model=model_name,
-            max_tokens=4096,
-            system=SYSTEM_PROMPT,
-            messages=messages,
-        )
-        text_parts = [block.text for block in response.content if block.type == "text"]
-        result = "\n".join(text_parts)
-        messages.append({"role": "assistant", "content": result})
-        return result
+    try:
+        if provider == "anthropic":
+            client = clients.get("anthropic")
+            if not client: return "Error: Anthropic no configurado (falta API KEY)."
+            response = client.messages.create(
+                model=model_name,
+                max_tokens=4096,
+                system=SYSTEM_PROMPT,
+                messages=messages,
+            )
+            text_parts = [block.text for block in response.content if block.type == "text"]
+            result = "\n".join(text_parts)
+            messages.append({"role": "assistant", "content": result})
+            return result
 
-    if provider == "openai":
-        client = clients.get("openai")
-        if not client: return "Error: OpenAI no configurado (falta API KEY)."
-        response = client.chat.completions.create(
-            model=model_name,
-            messages=[{"role": "system", "content": SYSTEM_PROMPT}] + messages,
-        )
-        text = response.choices[0].message.content or ""
+        if provider == "openai":
+            client = clients.get("openai")
+            if not client: return "Error: OpenAI no configurado (falta API KEY)."
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=[{"role": "system", "content": SYSTEM_PROMPT}] + messages,
+            )
+            text = response.choices[0].message.content or ""
+            messages.append({"role": "assistant", "content": text})
+            return text
+
+        # gemini
+        if "gemini" not in clients: return "Error: Gemini no configurado (falta API KEY)."
+        model = clients["gemini"].GenerativeModel(model_name)
+        history = []
+        for m in messages[:-1]:
+            role = "model" if m["role"] == "assistant" else "user"
+            history.append({"role": role, "parts": [m["content"]]})
+        chat_session = model.start_chat(history=history)
+        resp = chat_session.send_message(f"{SYSTEM_PROMPT}\n\nUsuario: {messages[-1]['content']}")
+        text = (resp.text or "").strip()
         messages.append({"role": "assistant", "content": text})
         return text
-
-    # gemini
-    if "gemini" not in clients: return "Error: Gemini no configurado (falta API KEY)."
-    model = clients["gemini"].GenerativeModel(model_name)
-    history = []
-    for m in messages[:-1]:
-        role = "model" if m["role"] == "assistant" else "user"
-        history.append({"role": role, "parts": [m["content"]]})
-    chat_session = model.start_chat(history=history)
-    resp = chat_session.send_message(f"{SYSTEM_PROMPT}\n\nUsuario: {messages[-1]['content']}")
-    text = (resp.text or "").strip()
-    messages.append({"role": "assistant", "content": text})
-    return text
+    except Exception as e:
+        return f"❌ Error con el modelo {model_name}: {e}"
 
 # --- Handlers de Telegram ---
+
+def get_main_keyboard():
+    # Teclado persistente en la parte inferior
+    return ReplyKeyboardMarkup(
+        [[KeyboardButton("⚙️ Configurar IA"), KeyboardButton("📊 Análisis Ventas")]],
+        resize_keyboard=True
+    )
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_modes[user_id] = "coach"
     await update.message.reply_text(
-        "👋 ¡Hola! Soy tu Agente Manager.\n\n"
-        "Para empezar, configura qué cerebro quieres que use hoy con /config o simplemente escribe tu mensaje."
+        "👋 ¡Hola! Soy tu Agente Manager de Vanguardia.\n\n"
+        "He activado un menú inferior para que puedas cambiar de IA en cualquier momento.",
+        reply_markup=get_main_keyboard()
     )
     await cmd_config(update, context)
 
@@ -147,7 +158,11 @@ async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🧠 OpenAI", callback_query_data="prov_openai")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Elige el proveedor que prefieras:", reply_markup=reply_markup)
+    msg = "¿Qué proveedor quieres usar?"
+    if update.callback_query:
+        await update.callback_query.edit_message_text(msg, reply_markup=reply_markup)
+    else:
+        await update.message.reply_text(msg, reply_markup=reply_markup)
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -164,7 +179,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard.append([InlineKeyboardButton(name, callback_query_data=f"mod_{provider}_{name}")])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(f"Has elegido {provider.capitalize()}. Ahora elige el modelo:", reply_markup=reply_markup)
+        await query.edit_message_text(f"Has elegido {provider.capitalize()}. Ahora elige el modelo de vanguardia:", reply_markup=reply_markup)
 
     elif data.startswith("mod_"):
         parts = data.split("_")
@@ -175,12 +190,21 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_providers[user_id] = provider
         user_models[user_id] = model_id
         
-        await query.edit_message_text(f"✅ Configuración guardada:\nProveedor: *{provider.capitalize()}*\nModelo: *{model_name}*", parse_mode="Markdown")
+        await query.edit_message_text(f"✅ *Configuración Aplicada*\n\n🧠 IA: {provider.capitalize()}\n🤖 Modelo: {model_name}\n\nYa puedes escribirme.", parse_mode="Markdown")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_text = update.message.text
     
+    # Manejar botones del teclado principal
+    if user_text == "⚙️ Configurar IA":
+        await cmd_config(update, context)
+        return
+    if user_text == "📊 Análisis Ventas":
+        user_modes[user_id] = "sales"
+        await update.message.reply_text("Modo análisis de ventas activado. ¿Qué quieres saber?")
+        return
+
     # Configuración por defecto si no existe
     if user_id not in user_providers:
         user_providers[user_id] = "gemini"
@@ -192,12 +216,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         response_text = await loop.run_in_executor(None, run_agent_sync, user_id, user_text)
     except Exception as e:
-        response_text = f"❌ Error: {e}"
+        response_text = f"❌ Error crítico: {e}"
 
-    await update.message.reply_text(response_text)
+    await update.message.reply_text(response_text, reply_markup=get_main_keyboard())
 
 def main():
-    print("Bot iniciando...")
+    print("Bot iniciando (Versión con Menú Persistente)...")
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     
     app.add_handler(CommandHandler("start", cmd_start))
