@@ -5,66 +5,80 @@ from dotenv import load_dotenv
 load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini").strip().lower()
 
 if not TELEGRAM_TOKEN:
     raise SystemExit("ERROR: Añade TELEGRAM_BOT_TOKEN en tu archivo .env")
 
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
 from agent import SYSTEM_PROMPT, TOOLS, run_tool
 from tools import get_sales_summary
 
-def _build_client():
-    if LLM_PROVIDER == "anthropic":
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
-            raise SystemExit("ERROR: Añade ANTHROPIC_API_KEY en .env")
-        import anthropic
-        return anthropic.Anthropic(api_key=api_key)
+# --- Configuración de Modelos ---
+MODEL_OPTIONS = {
+    "gemini": {
+        "Gemini 3 Flash": "models/gemini-3-flash-preview",
+        "Gemini 3.1 Pro (Low)": "models/gemini-3.1-pro-preview",
+        "Gemini 3.1 Pro (High)": "models/gemini-3.1-pro-preview-customtools",
+    },
+    "anthropic": {
+        "Opus 4.7": "claude-4-7-opus",
+        "Sonnet 4.6": "claude-4-6-sonnet",
+        "Haiku 4.5": "claude-4-5-haiku",
+    },
+    "openai": {
+        "ChatGPT 5.3": "chatgpt-5.3",
+        "Thinking 5.5": "thinking-5.5",
+        "GPT-OOS Medium": "gpt-oos-medium",
+    }
+}
 
-    if LLM_PROVIDER == "openai":
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            raise SystemExit("ERROR: Añade OPENAI_API_KEY en .env")
-        from openai import OpenAI
-        return OpenAI(api_key=api_key)
+# Clientes globales (se inicializan si hay API KEY)
+clients = {}
 
-    if LLM_PROVIDER == "gemini":
-        api_key = os.getenv("GOOGLE_API_KEY")
-        if not api_key:
-            raise SystemExit("ERROR: Añade GOOGLE_API_KEY en .env")
+def _init_clients():
+    # Gemini
+    gemini_key = os.getenv("GOOGLE_API_KEY")
+    if gemini_key:
         import google.generativeai as genai
-        genai.configure(api_key=api_key)
-        # Default to gemini-1.5-flash if not specified
-        model_name = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
-        return genai.GenerativeModel(model_name)
+        genai.configure(api_key=gemini_key)
+        clients["gemini"] = genai
+    
+    # Anthropic
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+    if anthropic_key:
+        import anthropic
+        clients["anthropic"] = anthropic.Anthropic(api_key=anthropic_key)
+        
+    # OpenAI
+    openai_key = os.getenv("OPENAI_API_KEY")
+    if openai_key:
+        from openai import OpenAI
+        clients["openai"] = OpenAI(api_key=openai_key)
 
-    raise SystemExit("ERROR: LLM_PROVIDER debe ser anthropic | openai | gemini")
+_init_clients()
 
-client = _build_client()
-
+# Estado de los usuarios
 conversations: dict[int, list] = {}
 user_modes: dict[int, str] = {}
+user_providers: dict[int, str] = {}
 user_models: dict[int, str] = {}
 
-def _effective_model(user_id: int) -> str:
-    if user_id in user_models:
-        return user_models[user_id]
-    if LLM_PROVIDER == "anthropic":
-        return os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-20240620")
-    if LLM_PROVIDER == "openai":
-        return os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-    return os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+def _get_user_config(user_id: int):
+    provider = user_providers.get(user_id, "gemini")
+    default_model = list(MODEL_OPTIONS[provider].values())[0]
+    model = user_models.get(user_id, default_model)
+    return provider, model
 
 def run_agent_sync(user_id: int, user_message: str) -> str:
     print(f"[DEBUG] Procesando mensaje de {user_id}: {user_message}")
     if user_id not in conversations:
         conversations[user_id] = []
+    
     mode = user_modes.get(user_id, "coach")
-    model_name = _effective_model(user_id)
-
+    provider, model_name = _get_user_config(user_id)
+    
     messages = conversations[user_id]
     if mode == "sales":
         sales_context = get_sales_summary()
@@ -77,7 +91,9 @@ def run_agent_sync(user_id: int, user_message: str) -> str:
     else:
         messages.append({"role": "user", "content": user_message})
 
-    if LLM_PROVIDER == "anthropic":
+    if provider == "anthropic":
+        client = clients.get("anthropic")
+        if not client: return "Error: Anthropic no configurado (falta API KEY)."
         response = client.messages.create(
             model=model_name,
             max_tokens=4096,
@@ -89,7 +105,9 @@ def run_agent_sync(user_id: int, user_message: str) -> str:
         messages.append({"role": "assistant", "content": result})
         return result
 
-    if LLM_PROVIDER == "openai":
+    if provider == "openai":
+        client = clients.get("openai")
+        if not client: return "Error: OpenAI no configurado (falta API KEY)."
         response = client.chat.completions.create(
             model=model_name,
             messages=[{"role": "system", "content": SYSTEM_PROMPT}] + messages,
@@ -99,44 +117,95 @@ def run_agent_sync(user_id: int, user_message: str) -> str:
         return text
 
     # gemini
+    if "gemini" not in clients: return "Error: Gemini no configurado (falta API KEY)."
+    model = clients["gemini"].GenerativeModel(model_name)
     history = []
     for m in messages[:-1]:
         role = "model" if m["role"] == "assistant" else "user"
         history.append({"role": role, "parts": [m["content"]]})
-    chat_session = client.start_chat(history=history)
+    chat_session = model.start_chat(history=history)
     resp = chat_session.send_message(f"{SYSTEM_PROMPT}\n\nUsuario: {messages[-1]['content']}")
     text = (resp.text or "").strip()
     messages.append({"role": "assistant", "content": text})
     return text
 
+# --- Handlers de Telegram ---
+
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print(f"[DEBUG] /start recibido de {update.effective_user.id}")
     user_id = update.effective_user.id
     user_modes[user_id] = "coach"
-    await update.message.reply_text("Hola, soy tu Agente Manager. Estoy listo.")
+    await update.message.reply_text(
+        "👋 ¡Hola! Soy tu Agente Manager.\n\n"
+        "Para empezar, configura qué cerebro quieres que use hoy con /config o simplemente escribe tu mensaje."
+    )
+    await cmd_config(update, context)
+
+async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("💎 Gemini", callback_query_data="prov_gemini")],
+        [InlineKeyboardButton("❄️ Anthropic", callback_query_data="prov_anthropic")],
+        [InlineKeyboardButton("🧠 OpenAI", callback_query_data="prov_openai")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("Elige el proveedor que prefieras:", reply_markup=reply_markup)
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    user_id = update.effective_user.id
+
+    if data.startswith("prov_"):
+        provider = data.split("_")[1]
+        user_providers[user_id] = provider
+        # Mostrar modelos del proveedor
+        keyboard = []
+        for name, model_id in MODEL_OPTIONS[provider].items():
+            keyboard.append([InlineKeyboardButton(name, callback_query_data=f"mod_{provider}_{name}")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(f"Has elegido {provider.capitalize()}. Ahora elige el modelo:", reply_markup=reply_markup)
+
+    elif data.startswith("mod_"):
+        parts = data.split("_")
+        provider = parts[1]
+        model_name = parts[2]
+        model_id = MODEL_OPTIONS[provider][model_name]
+        
+        user_providers[user_id] = provider
+        user_models[user_id] = model_id
+        
+        await query.edit_message_text(f"✅ Configuración guardada:\nProveedor: *{provider.capitalize()}*\nModelo: *{model_name}*", parse_mode="Markdown")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_text = update.message.text
-    print(f"[DEBUG] Mensaje recibido de {user_id}: {user_text}")
     
+    # Configuración por defecto si no existe
+    if user_id not in user_providers:
+        user_providers[user_id] = "gemini"
+    if user_id not in user_models:
+        user_models[user_id] = "models/gemini-3-flash-preview"
+
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     loop = asyncio.get_event_loop()
     try:
         response_text = await loop.run_in_executor(None, run_agent_sync, user_id, user_text)
-        print(f"[DEBUG] Respuesta enviada a {user_id}")
     except Exception as e:
-        print(f"[ERROR] Error procesando mensaje: {e}")
-        response_text = f"Error: {e}"
+        response_text = f"❌ Error: {e}"
 
     await update.message.reply_text(response_text)
 
 def main():
-    print("Bot iniciando polling...")
+    print("Bot iniciando...")
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("config", cmd_config))
+    app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("Bot iniciado. Esperando mensajes...")
+    
+    print("Bot en funcionamiento. Esperando mensajes...")
     app.run_polling()
 
 if __name__ == "__main__":
